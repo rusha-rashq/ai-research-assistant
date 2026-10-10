@@ -12,6 +12,8 @@
   .meta { color: #666; font-size: .9rem; }
   .err { color: #b00020; }
   input[type=text] { width: 70%; padding: .5rem; }
+  .tag { font-size: .75rem; background: #eee; border-radius: 4px; padding: .1rem .4rem; margin-left: .4rem; }
+  .warn { color: #8a5a00; }
   button.act { padding: .5rem 1rem; cursor: pointer; }
 </style>
 </head>
@@ -19,6 +21,7 @@
 <h1>AI Research Assistant</h1>
 <nav>
   <button id="tab-search" class="active">Search</button>
+  <button id="tab-library">Library</button>
 </nav>
 
 <section id="search-view">
@@ -30,9 +33,73 @@
   <div id="results"></div>
 </section>
 
+<section id="library-view" hidden>
+  <div id="lib-status"></div>
+  <div id="library"></div>
+</section>
+
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+let results = [];
+
+function showTab(name) {
+  $("search-view").hidden = name !== "search";
+  $("library-view").hidden = name !== "library";
+  $("tab-search").classList.toggle("active", name === "search");
+  $("tab-library").classList.toggle("active", name === "library");
+  if (name === "library") loadLibrary();
+}
+$("tab-search").onclick = () => showTab("search");
+$("tab-library").onclick = () => showTab("library");
+
+async function savePaper(i) {
+  const btn = $("save-" + i), msg = $("save-msg-" + i);
+  btn.disabled = true;
+  msg.textContent = "Saving (downloading PDF)...";
+  msg.className = "meta";
+  try {
+    const r = await fetch("/api/papers", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(results[i]),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Save failed");
+    msg.textContent = data.warning ? data.warning : "Saved.";
+    if (data.warning) msg.className = "warn";
+  } catch (e) {
+    msg.innerHTML = `<span class="err">${esc(e.message)}</span>`;
+    if (!String(e.message).includes("already")) btn.disabled = false;
+  }
+}
+
+async function loadLibrary() {
+  $("lib-status").textContent = "Loading...";
+  try {
+    const r = await fetch("/api/papers");
+    const papers = await r.json();
+    if (!r.ok) throw new Error(papers.detail || "Failed to load library");
+    $("lib-status").textContent = papers.length ? "" : "Your library is empty. Save papers from the Search tab.";
+    $("library").innerHTML = papers.map(p => `
+      <div class="card">
+        <h3>${esc(p.title)}<span class="tag">${esc(p.source)}</span>
+          ${p.has_text ? "" : '<span class="tag">no full text</span>'}</h3>
+        <div class="meta">${esc(p.authors)} &middot; ${esc(p.year)}</div>
+        <p>${esc(p.abstract)}</p>
+        ${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">View on arXiv</a>` : ""}
+        <button class="act" onclick="deletePaper(${p.id})">Delete</button>
+      </div>`).join("");
+  } catch (e) {
+    $("lib-status").innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  }
+}
+
+async function deletePaper(id) {
+  if (!confirm("Delete this paper from your library?")) return;
+  await fetch("/api/papers/" + id, {method: "DELETE"});
+  loadLibrary();
+}
 
 async function doSearch() {
   const q = $("q").value.trim();
@@ -44,12 +111,15 @@ async function doSearch() {
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || "Search failed");
     $("status").textContent = data.length ? "" : "No results.";
-    $("results").innerHTML = data.map(p => `
+    results = data;
+    $("results").innerHTML = data.map((p, i) => `
       <div class="card">
         <h3>${esc(p.title)}</h3>
         <div class="meta">${esc(p.authors.join(", "))} &middot; ${esc(p.year)}</div>
         <p>${esc(p.abstract)}</p>
         <a href="${esc(p.url)}" target="_blank" rel="noopener">View on arXiv</a>
+        <button class="act" id="save-${i}" onclick="savePaper(${i})">Save to library</button>
+        <span id="save-msg-${i}" class="meta"></span>
       </div>`).join("");
   } catch (e) {
     $("status").innerHTML = `<span class="err">${esc(e.message)}</span>`;
