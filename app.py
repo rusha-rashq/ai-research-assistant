@@ -1,15 +1,17 @@
 import os
+import uuid
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import db
+import llm
 from arxiv import search_arxiv
-from pdf import base_arxiv_id, fetch_and_extract
+from pdf import base_arxiv_id, extract_text, extract_first_page, fetch_and_extract
 
 load_dotenv()
 db.init_db()
@@ -51,6 +53,33 @@ def save_paper(p: SavePaper):
         year=p.year, abstract=p.abstract, url=p.url, pdf_path=pdf_path, full_text=full_text,
     )
     return {"paper": db.get_paper(paper_id), "warning": warning}
+
+
+@app.post("/api/upload")
+def upload_pdf(file: UploadFile = File(...)):
+    path = db.PDF_DIR / f"upload_{uuid.uuid4().hex}.pdf"
+    path.write_bytes(file.file.read())
+    try:
+        try:
+            full_text = extract_text(path)
+            first_page = extract_first_page(path)
+        except Exception:
+            raise HTTPException(400, "Could not read that file as a PDF.")
+        if not first_page.strip():
+            raise HTTPException(422, "No text found in the PDF (scanned/image-only PDFs aren't supported).")
+        try:
+            meta = llm.extract_metadata(first_page)
+        except llm.LLMError as e:
+            raise HTTPException(502, str(e))
+        title = meta["title"] or (file.filename or "Untitled upload")
+        paper_id = db.add_paper(
+            source="upload", arxiv_id=None, title=title, authors=meta["authors"], year=meta["year"],
+            abstract=meta["abstract"], url="", pdf_path=str(path), full_text=full_text,
+        )
+    except Exception:
+        path.unlink(missing_ok=True)  # don't leave orphan files when the upload fails
+        raise
+    return {"paper": db.get_paper(paper_id)}
 
 
 @app.get("/api/papers")

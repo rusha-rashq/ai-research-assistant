@@ -27,6 +27,11 @@ def extract_text(path):
         return "\n".join(page.get_text() for page in doc).strip()
 
 
+def extract_first_page(path):
+    with fitz.open(path) as doc:
+        return doc[0].get_text().strip() if len(doc) else ""
+
+
 def fetch_and_extract(arxiv_id):
     """Download + extract. Returns (pdf_path, full_text) or raises."""
     path = download_pdf(arxiv_id)
