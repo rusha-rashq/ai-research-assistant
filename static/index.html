@@ -2,86 +2,174 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI Research Assistant</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; color: #222; }
-  nav button { padding: .5rem 1rem; border: 1px solid #ccc; background: #f5f5f5; cursor: pointer; }
-  nav button.active { background: #222; color: #fff; }
-  .card { border: 1px solid #ddd; border-radius: 6px; padding: 1rem; margin: 1rem 0; }
-  .card h3 { margin: 0 0 .3rem; }
-  .meta { color: #666; font-size: .9rem; }
-  .err { color: #b00020; }
-  input[type=text] { width: 70%; padding: .5rem; }
-  .tag { font-size: .75rem; background: #eee; border-radius: 4px; padding: .1rem .4rem; margin-left: .4rem; }
-  .warn { color: #8a5a00; }
-  .md { line-height: 1.5; }
-  .md h2 { font-size: 1.1rem; margin: 1rem 0 .3rem; }
-  .md pre { background: #f5f5f5; padding: .5rem; overflow-x: auto; }
-  .qa { border-left: 3px solid #ddd; padding-left: .8rem; margin: 1rem 0; }
+  :root {
+    --accent: #4f46e5;
+    --accent-soft: #eef2ff;
+    --bg: #f3f4f6;
+    --card: #fff;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 12px rgba(0,0,0,.05);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.45; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 1.25rem 3rem; }
+
+  header { padding: 1.75rem 0 .5rem; }
+  header h1 { margin: 0; font-size: 1.6rem; }
+  header p { margin: .2rem 0 0; color: var(--muted); }
+
+  .tabs { display: flex; gap: 1.5rem; border-bottom: 1px solid var(--border); margin: 1rem 0 1.25rem; }
+  .tab { background: none; border: 0; border-bottom: 3px solid transparent; padding: .6rem .1rem;
+         font: inherit; font-weight: 600; color: var(--muted); cursor: pointer; margin-bottom: -1px; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .card { background: var(--card); border-radius: 10px; box-shadow: var(--shadow); padding: 1rem 1.15rem; margin-bottom: 1rem; }
+  .card h3 { margin: 0 0 .25rem; font-size: 1.05rem; }
+  .meta { color: var(--muted); font-size: .88rem; }
+  .err { color: #b91c1c; }
+  .warn { color: #92600a; }
+  .count { color: var(--muted); font-size: .92rem; margin: 0 0 .75rem; }
+
+  .abstract { margin: .6rem 0 .2rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .abstract.open { display: block; }
+  .toggle { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; font-size: .88rem; cursor: pointer; }
+
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin-top: .6rem; }
+  input[type=text], textarea { width: 100%; padding: .6rem .75rem; border: 1px solid var(--border); border-radius: 8px;
+                               font: inherit; background: #fff; }
+  input[type=text]:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .searchbar { display: flex; gap: .5rem; margin-bottom: .75rem; }
+  button.act { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: .55rem 1rem; font: inherit;
+               font-weight: 600; cursor: pointer; white-space: nowrap; }
+  button.act:hover { filter: brightness(1.08); }
+  button.act:disabled { opacity: .55; cursor: not-allowed; }
+  button.ghost { background: #fff; color: var(--text); border: 1px solid var(--border); }
+  a { color: var(--accent); }
+
+  .tag { font-size: .7rem; background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: .1rem .55rem;
+         margin-left: .4rem; font-weight: 600; vertical-align: middle; }
+  .tag.gray { background: #f3f4f6; color: var(--muted); }
+
+  .spinner { display: inline-block; width: .95em; height: .95em; border: 2px solid var(--border); border-top-color: var(--accent);
+             border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -.15em; margin-right: .4rem; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Library: list on the left, detail panel on the right */
+  .split { display: grid; grid-template-columns: 360px 1fr; gap: 1.25rem; align-items: start; }
+  .detail { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; margin-bottom: 0; }
+  .item { cursor: pointer; border: 2px solid transparent; padding: .8rem 1rem; }
+  .item:hover { border-color: var(--border); }
+  .item.selected { border-color: var(--accent); background: var(--accent-soft); }
+  .item .title { font-weight: 600; }
+  .del { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: .82rem; padding: 0; }
+  .del:hover { color: #b91c1c; }
+  .placeholder { color: var(--muted); text-align: center; padding: 3rem 1rem; }
+  .detail h2 { font-size: 1rem; margin: 1.25rem 0 .5rem; }
+
+  .md { line-height: 1.55; }
+  .md h2 { font-size: 1.05rem; margin: 1rem 0 .3rem; color: var(--accent); }
+  .md pre { background: #f3f4f6; padding: .5rem; overflow-x: auto; border-radius: 6px; }
+  .qa { border-left: 3px solid var(--accent); background: #fafafa; padding: .5rem .9rem; margin: .8rem 0; border-radius: 0 8px 8px 0; }
   .qa .q { font-weight: 600; }
-  .link { cursor: pointer; color: #0645ad; text-decoration: underline; }
-  textarea { width: 100%; box-sizing: border-box; padding: .5rem; font: inherit; }
-  button.act { padding: .5rem 1rem; cursor: pointer; }
+
+  @media (max-width: 800px) {
+    .split { grid-template-columns: 1fr; }
+    .detail { position: static; max-height: none; }
+  }
 </style>
 </head>
 <body>
-<h1>AI Research Assistant</h1>
-<nav>
-  <button id="tab-search" class="active">Search</button>
-  <button id="tab-library">Library</button>
-</nav>
+<div class="wrap">
+<header>
+  <h1>AI Research Assistant</h1>
+  <p>Search arXiv, build a local library, and get Claude to summarize papers or answer questions about them.</p>
+</header>
+
+<div class="tabs" role="tablist">
+  <button class="tab active" id="tab-search" role="tab">Search</button>
+  <button class="tab" id="tab-library" role="tab">Library</button>
+</div>
 
 <section id="search-view">
-  <p>
-    <input type="text" id="q" placeholder="Search arXiv by keyword...">
+  <div class="searchbar">
+    <input type="text" id="q" placeholder="Search arXiv by keyword, e.g. retrieval augmented generation">
     <button class="act" id="search-btn">Search</button>
-  </p>
-  <div id="status"></div>
+  </div>
+  <div id="status" class="count"></div>
   <div id="results"></div>
 </section>
 
 <section id="library-view" hidden>
-<div id="library-list">
-  <div class="card">
-    <strong>Upload a PDF</strong>
-    <input type="file" id="pdf-file" accept="application/pdf">
-    <button class="act" id="upload-btn">Upload &amp; extract metadata</button>
-    <div id="upload-status" class="meta"></div>
-  </div>
-  <div id="lib-status"></div>
-  <div id="library"></div>
-</div>
+  <div class="split">
+    <div>
+      <div class="card">
+        <strong>Upload a PDF</strong>
+        <div class="row">
+          <input type="file" id="pdf-file" accept="application/pdf">
+          <button class="act" id="upload-btn">Upload</button>
+        </div>
+        <div id="upload-status" class="meta" style="margin-top:.5rem"></div>
+      </div>
+      <div id="lib-status" class="count"></div>
+      <div id="library"></div>
+    </div>
 
-<div id="detail-view" hidden>
-  <p><button class="act" id="back-btn">&larr; Back to library</button></p>
-  <div id="detail-meta" class="card"></div>
-  <h2>Summary</h2>
-  <p>
-    <button class="act" id="summarize-btn">Summarize</button>
-    <span id="summary-status" class="meta"></span>
-  </p>
-  <div id="summary" class="md"></div>
-  <h2>Ask a question</h2>
-  <textarea id="question" rows="3" placeholder="Ask anything about this paper..."></textarea>
-  <p>
-    <button class="act" id="ask-btn">Ask</button>
-    <span id="ask-status" class="meta"></span>
-  </p>
-  <div id="answers"></div>
-</div>
+    <div class="card detail" id="detail">
+      <div class="placeholder" id="detail-placeholder">Select a paper from the list to summarize it or ask questions.</div>
+      <div id="detail-view" hidden>
+        <div id="detail-meta"></div>
+        <h2>Summary</h2>
+        <div class="row" style="margin-top:0">
+          <button class="act" id="summarize-btn">Summarize</button>
+          <span id="summary-status" class="meta"></span>
+        </div>
+        <div id="summary" class="md"></div>
+        <h2>Ask a question</h2>
+        <textarea id="question" rows="3" placeholder="Ask anything about this paper... (Ctrl/Cmd+Enter to send)"></textarea>
+        <div class="row">
+          <button class="act" id="ask-btn">Ask</button>
+          <span id="ask-status" class="meta"></span>
+        </div>
+        <div id="answers"></div>
+      </div>
+    </div>
+  </div>
 </section>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 <script>
 const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 // Render Markdown from the model; sanitize it, and fall back to plain text if the CDN scripts didn't load.
 const md = text => (window.marked && window.DOMPurify)
   ? DOMPurify.sanitize(marked.parse(text))
   : `<pre style="white-space:pre-wrap">${esc(text)}</pre>`;
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const spin = text => `<span class="spinner"></span>${esc(text)}`;
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+// Abstracts are clamped to 3 lines; add a "Show more" toggle only where the text actually overflows.
+const abstractHtml = text => `<div class="abstract">${esc(text)}</div><button class="toggle" hidden onclick="toggleAbstract(this)">Show more</button>`;
+function toggleAbstract(btn) {
+  const open = btn.previousElementSibling.classList.toggle("open");
+  btn.textContent = open ? "Show less" : "Show more";
+}
+function initAbstracts(root) {
+  root.querySelectorAll(".abstract").forEach(el => {
+    el.nextElementSibling.hidden = el.scrollHeight <= el.clientHeight + 1;
+  });
+}
 
 let results = [];
+let currentId = null;
 
 function showTab(name) {
   $("search-view").hidden = name !== "search";
@@ -89,15 +177,50 @@ function showTab(name) {
   $("tab-search").classList.toggle("active", name === "search");
   $("tab-library").classList.toggle("active", name === "library");
   if (name === "library") loadLibrary();
+  else initAbstracts($("results"));
 }
 $("tab-search").onclick = () => showTab("search");
 $("tab-library").onclick = () => showTab("library");
 
+// ---- Search ----
+async function doSearch() {
+  const q = $("q").value.trim();
+  if (!q) return;
+  $("status").innerHTML = spin("Searching arXiv...");
+  $("results").innerHTML = "";
+  $("search-btn").disabled = true;
+  try {
+    const r = await fetch("/api/search?q=" + encodeURIComponent(q));
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Search failed");
+    results = data;
+    $("status").textContent = data.length ? `${plural(data.length, "result")} for “${q}”` : `No results for “${q}”.`;
+    $("results").innerHTML = data.map((p, i) => `
+      <div class="card">
+        <h3>${esc(p.title)}</h3>
+        <div class="meta">${esc(p.authors.join(", "))} &middot; ${esc(p.year)}</div>
+        ${abstractHtml(p.abstract)}
+        <div class="row">
+          <button class="act" id="save-${i}" onclick="savePaper(${i})">Save to library</button>
+          <a href="${esc(p.url)}" target="_blank" rel="noopener">View on arXiv</a>
+          <span id="save-msg-${i}" class="meta"></span>
+        </div>
+      </div>`).join("");
+    initAbstracts($("results"));
+  } catch (e) {
+    $("status").innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  } finally {
+    $("search-btn").disabled = false;
+  }
+}
+$("search-btn").onclick = doSearch;
+$("q").addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
+
 async function savePaper(i) {
   const btn = $("save-" + i), msg = $("save-msg-" + i);
   btn.disabled = true;
-  msg.textContent = "Saving (downloading PDF)...";
   msg.className = "meta";
+  msg.innerHTML = spin("Saving (downloading PDF)...");
   try {
     const r = await fetch("/api/papers", {
       method: "POST", headers: {"Content-Type": "application/json"},
@@ -113,21 +236,26 @@ async function savePaper(i) {
   }
 }
 
+// ---- Library ----
 async function loadLibrary() {
-  $("lib-status").textContent = "Loading...";
+  $("lib-status").innerHTML = spin("Loading...");
   try {
     const r = await fetch("/api/papers");
     const papers = await r.json();
     if (!r.ok) throw new Error(papers.detail || "Failed to load library");
-    $("lib-status").textContent = papers.length ? "" : "Your library is empty. Save papers from the Search tab.";
+    $("lib-status").textContent = papers.length
+      ? plural(papers.length, "saved paper")
+      : "Your library is empty. Save papers from the Search tab or upload a PDF.";
     $("library").innerHTML = papers.map(p => `
-      <div class="card">
-        <h3><span class="link" onclick="openPaper(${p.id})">${esc(p.title)}</span><span class="tag">${esc(p.source)}</span>
-          ${p.has_text ? "" : '<span class="tag">no full text</span>'}</h3>
-        <div class="meta">${esc(p.authors)} &middot; ${esc(p.year)}</div>
-        <p>${esc(p.abstract)}</p>
-        ${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">View on arXiv</a>` : ""}
-        <button class="act" onclick="deletePaper(${p.id})">Delete</button>
+      <div class="card item ${p.id === currentId ? "selected" : ""}" data-id="${p.id}" onclick="openPaper(${p.id})">
+        <div class="title">${esc(p.title)}</div>
+        <div class="meta">${esc(p.authors)}${p.year ? " &middot; " + esc(p.year) : ""}</div>
+        <div class="row">
+          <span class="tag">${p.source === "upload" ? "uploaded" : "arXiv"}</span>
+          ${p.has_text ? "" : '<span class="tag gray">no full text yet</span>'}
+          <span style="flex:1"></span>
+          <button class="del" onclick="event.stopPropagation(); deletePaper(${p.id})">Delete</button>
+        </div>
       </div>`).join("");
   } catch (e) {
     $("lib-status").innerHTML = `<span class="err">${esc(e.message)}</span>`;
@@ -136,10 +264,10 @@ async function loadLibrary() {
 
 $("upload-btn").onclick = async () => {
   const f = $("pdf-file").files[0];
-  if (!f) { $("upload-status").textContent = "Choose a PDF first."; return; }
   const st = $("upload-status");
+  if (!f) { st.textContent = "Choose a PDF first."; return; }
   st.className = "meta";
-  st.textContent = "Extracting text and asking Claude for metadata...";
+  st.innerHTML = spin("Extracting text and asking Claude for metadata...");
   $("upload-btn").disabled = true;
   try {
     const fd = new FormData();
@@ -157,27 +285,40 @@ $("upload-btn").onclick = async () => {
   }
 };
 
-let currentId = null;
+async function deletePaper(id) {
+  if (!confirm("Delete this paper from your library?")) return;
+  await fetch("/api/papers/" + id, {method: "DELETE"});
+  if (id === currentId) {
+    currentId = null;
+    $("detail-view").hidden = true;
+    $("detail-placeholder").hidden = false;
+  }
+  loadLibrary();
+}
 
+// ---- Detail panel ----
 async function openPaper(id) {
   currentId = id;
-  $("library-list").hidden = true;
+  document.querySelectorAll("#library .item").forEach(el => el.classList.toggle("selected", +el.dataset.id === id));
+  $("detail-placeholder").hidden = true;
   $("detail-view").hidden = false;
   $("summary").innerHTML = "";
   $("summary-status").textContent = "";
   $("answers").innerHTML = "";
   $("ask-status").textContent = "";
   $("question").value = "";
-  $("detail-meta").textContent = "Loading...";
+  $("detail-meta").innerHTML = spin("Loading...");
   try {
     const r = await fetch("/api/papers/" + id);
     const p = await r.json();
     if (!r.ok) throw new Error(p.detail || "Failed to load paper");
+    if (id !== currentId) return;
     $("detail-meta").innerHTML = `
       <h3>${esc(p.title)}</h3>
-      <div class="meta">${esc(p.authors)} &middot; ${esc(p.year)}</div>
-      <p>${esc(p.abstract)}</p>
-      ${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">View on arXiv</a>` : ""}`;
+      <div class="meta">${esc(p.authors)}${p.year ? " &middot; " + esc(p.year) : ""}</div>
+      ${abstractHtml(p.abstract)}
+      ${p.url ? `<div class="row"><a href="${esc(p.url)}" target="_blank" rel="noopener">View on arXiv</a></div>` : ""}`;
+    initAbstracts($("detail-meta"));
     if (p.summary) {
       $("summary").innerHTML = md(p.summary);
       $("summarize-btn").textContent = "Re-summarize";
@@ -189,18 +330,11 @@ async function openPaper(id) {
   }
 }
 
-$("back-btn").onclick = () => {
-  currentId = null;
-  $("detail-view").hidden = true;
-  $("library-list").hidden = false;
-  loadLibrary();
-};
-
-// Run an LLM request with a loading state on the button; returns parsed JSON or throws.
+// Run an LLM request with a spinner on the button's status line; returns parsed JSON or null on error.
 async function llmCall(btn, statusEl, loadingText, url, body) {
   btn.disabled = true;
   statusEl.className = "meta";
-  statusEl.textContent = loadingText;
+  statusEl.innerHTML = spin(loadingText);
   try {
     const r = await fetch(url, body ? {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
@@ -223,7 +357,7 @@ $("summarize-btn").onclick = async () => {
   const force = $("summarize-btn").textContent === "Re-summarize";
   $("summary").innerHTML = "";
   const data = await llmCall($("summarize-btn"), $("summary-status"),
-    "Claude is reading the full paper (this can take 10-30 seconds)...",
+    "Claude is reading the full paper (10-30 seconds)...",
     `/api/papers/${id}/summarize?force=${force}`);
   if (data && id === currentId) {
     $("summary").innerHTML = md(data.summary);
@@ -244,39 +378,6 @@ async function askQuestion() {
 }
 $("ask-btn").onclick = askQuestion;
 $("question").addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) askQuestion(); });
-
-async function deletePaper(id) {
-  if (!confirm("Delete this paper from your library?")) return;
-  await fetch("/api/papers/" + id, {method: "DELETE"});
-  loadLibrary();
-}
-
-async function doSearch() {
-  const q = $("q").value.trim();
-  if (!q) return;
-  $("status").textContent = "Searching...";
-  $("results").innerHTML = "";
-  try {
-    const r = await fetch("/api/search?q=" + encodeURIComponent(q));
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || "Search failed");
-    $("status").textContent = data.length ? "" : "No results.";
-    results = data;
-    $("results").innerHTML = data.map((p, i) => `
-      <div class="card">
-        <h3>${esc(p.title)}</h3>
-        <div class="meta">${esc(p.authors.join(", "))} &middot; ${esc(p.year)}</div>
-        <p>${esc(p.abstract)}</p>
-        <a href="${esc(p.url)}" target="_blank" rel="noopener">View on arXiv</a>
-        <button class="act" id="save-${i}" onclick="savePaper(${i})">Save to library</button>
-        <span id="save-msg-${i}" class="meta"></span>
-      </div>`).join("");
-  } catch (e) {
-    $("status").innerHTML = `<span class="err">${esc(e.message)}</span>`;
-  }
-}
-$("search-btn").onclick = doSearch;
-$("q").addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
 </script>
 </body>
 </html>
