@@ -56,3 +56,41 @@ def extract_metadata(first_page_text):
         "year": year if isinstance(year, int) else None,
         "abstract": str(data.get("abstract") or "").strip(),
     }
+
+
+# ~500k chars is roughly 125k tokens, which fits comfortably in the model's context window.
+MAX_PAPER_CHARS = 500_000
+
+
+def prepare_text(full_text):
+    """Return (text, truncated) with the paper cut to MAX_PAPER_CHARS if needed."""
+    if len(full_text) <= MAX_PAPER_CHARS:
+        return full_text, False
+    return full_text[:MAX_PAPER_CHARS], True
+
+
+def summarize(title, full_text):
+    text, truncated = prepare_text(full_text)
+    prompt = (
+        f"Summarize the research paper below, titled \"{title}\", based on its full text. "
+        "Use Markdown with exactly these four sections as '##' headings:\n"
+        "## Problem\n## Method\n## Key Results\n## Limitations\n\n"
+        "Be specific: include concrete numbers, datasets and baselines where the paper gives them. "
+        "For Limitations, include both limitations the authors state and any significant ones that "
+        "are evident from the paper; say which is which. Only use information from the paper.\n\n"
+        f"<paper>\n{text}\n</paper>"
+    )
+    return ask_claude(prompt, max_tokens=2000), truncated
+
+
+QA_SYSTEM = (
+    "You answer questions about a single research paper, using only the paper's text provided by the user. "
+    "If the paper does not contain the answer, say so plainly instead of guessing or using outside knowledge. "
+    "Answer in Markdown, concisely, and refer to sections, figures or tables of the paper when helpful."
+)
+
+
+def answer_question(title, full_text, question):
+    text, truncated = prepare_text(full_text)
+    prompt = f"<paper title=\"{title}\">\n{text}\n</paper>\n\nQuestion: {question}"
+    return ask_claude(prompt, system=QA_SYSTEM, max_tokens=1500), truncated

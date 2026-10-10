@@ -82,6 +82,60 @@ def upload_pdf(file: UploadFile = File(...)):
     return {"paper": db.get_paper(paper_id)}
 
 
+class Question(BaseModel):
+    question: str
+
+
+def paper_with_text(paper_id):
+    """Load a paper with its full text, retrying the arXiv PDF download if it failed at save time."""
+    paper = db.get_paper(paper_id, full_text=True)
+    if not paper:
+        raise HTTPException(404, "Paper not found.")
+    if paper["full_text"]:
+        return paper
+    if paper["arxiv_id"]:
+        try:
+            pdf_path, full_text = fetch_and_extract(paper["arxiv_id"])
+        except Exception as e:
+            raise HTTPException(502, f"The paper's full text isn't available yet: PDF download failed ({e}).")
+        if not full_text:
+            raise HTTPException(422, "The paper's PDF contains no extractable text.")
+        db.update_paper(paper_id, pdf_path=pdf_path, full_text=full_text)
+        paper.update(pdf_path=pdf_path, full_text=full_text)
+        return paper
+    raise HTTPException(422, "This paper has no stored full text.")
+
+
+def truncation_note(truncated):
+    return "This paper is very long, so only the first part of its text was used." if truncated else None
+
+
+@app.post("/api/papers/{paper_id}/summarize")
+def summarize_paper(paper_id: int, force: bool = False):
+    paper = paper_with_text(paper_id)
+    if paper["summary"] and not force:
+        return {"summary": paper["summary"], "cached": True, "warning": None}
+    try:
+        summary, truncated = llm.summarize(paper["title"], paper["full_text"])
+    except llm.LLMError as e:
+        raise HTTPException(502, str(e))
+    db.update_paper(paper_id, summary=summary)
+    return {"summary": summary, "cached": False, "warning": truncation_note(truncated)}
+
+
+@app.post("/api/papers/{paper_id}/ask")
+def ask_paper(paper_id: int, body: Question):
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(400, "Enter a question.")
+    paper = paper_with_text(paper_id)
+    try:
+        answer, truncated = llm.answer_question(paper["title"], paper["full_text"], question)
+    except llm.LLMError as e:
+        raise HTTPException(502, str(e))
+    return {"answer": answer, "warning": truncation_note(truncated)}
+
+
 @app.get("/api/papers")
 def list_papers():
     return db.list_papers()
