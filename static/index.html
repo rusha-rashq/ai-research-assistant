@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AI Research Assistant</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  nav button { padding: .5rem 1rem; border: 1px solid #ccc; background: #f5f5f5; cursor: pointer; }
+  nav button.active { background: #222; color: #fff; }
+  .card { border: 1px solid #ddd; border-radius: 6px; padding: 1rem; margin: 1rem 0; }
+  .card h3 { margin: 0 0 .3rem; }
+  .meta { color: #666; font-size: .9rem; }
+  .err { color: #b00020; }
+  input[type=text] { width: 70%; padding: .5rem; }
+  button.act { padding: .5rem 1rem; cursor: pointer; }
+</style>
+</head>
+<body>
+<h1>AI Research Assistant</h1>
+<nav>
+  <button id="tab-search" class="active">Search</button>
+</nav>
+
+<section id="search-view">
+  <p>
+    <input type="text" id="q" placeholder="Search arXiv by keyword...">
+    <button class="act" id="search-btn">Search</button>
+  </p>
+  <div id="status"></div>
+  <div id="results"></div>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+async function doSearch() {
+  const q = $("q").value.trim();
+  if (!q) return;
+  $("status").textContent = "Searching...";
+  $("results").innerHTML = "";
+  try {
+    const r = await fetch("/api/search?q=" + encodeURIComponent(q));
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Search failed");
+    $("status").textContent = data.length ? "" : "No results.";
+    $("results").innerHTML = data.map(p => `
+      <div class="card">
+        <h3>${esc(p.title)}</h3>
+        <div class="meta">${esc(p.authors.join(", "))} &middot; ${esc(p.year)}</div>
+        <p>${esc(p.abstract)}</p>
+        <a href="${esc(p.url)}" target="_blank" rel="noopener">View on arXiv</a>
+      </div>`).join("");
+  } catch (e) {
+    $("status").innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  }
+}
+$("search-btn").onclick = doSearch;
+$("q").addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
+</script>
+</body>
+</html>
