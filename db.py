@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 DATA_DIR = Path("data")
@@ -9,10 +10,16 @@ DB_PATH = DATA_DIR / "library.db"
 LIST_COLS = "id, source, arxiv_id, title, authors, year, abstract, url, pdf_path, summary, created_at, (full_text IS NOT NULL) AS has_text"
 
 
+@contextmanager
 def connect():
+    """Yield a connection that commits on success, rolls back on error, and always closes."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        with conn:  # commit / rollback
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db():
