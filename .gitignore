@@ -5,3 +5,7 @@ data/
 .coverage
 htmlcov/
 *-conversation.txt
+mutants/
+.mutmut-cache/
+mutation/results/
+mutation/round0_tests/**/__pycache__/
