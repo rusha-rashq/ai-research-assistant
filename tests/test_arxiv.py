@@ -59,3 +59,16 @@ def test_malformed_xml_raises(monkeypatch, fake_response):
 def test_clean_handles_none():
     assert arxiv._clean(None) == ""
     assert arxiv._clean("  a \n b ") == "a b"
+
+
+def test_search_starts_from_first_result(monkeypatch, fake_response, arxiv_xml):
+    """Results must be requested from the beginning (offset 0), not skipping the top hits."""
+    seen = {}
+
+    def fake_get(url, **kw):
+        seen.update(kw)
+        return fake_response(text=arxiv_xml)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    arxiv.search_arxiv("anything")
+    assert seen["params"]["start"] == 0

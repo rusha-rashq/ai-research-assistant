@@ -156,3 +156,34 @@ def test_summarize_propagates_llm_error(fake_claude):
     fake_claude(error=api_error())
     with pytest.raises(llm.LLMError):
         llm.summarize("t", "b")
+
+
+# --- multi-line (pretty-printed) JSON from the model ------------------------------
+PRETTY = json.dumps(GOOD, indent=2)
+EXPECTED = {"title": "A Title", "authors": "X, Y", "year": 2023, "abstract": "Abs"}
+
+
+def test_metadata_pretty_printed_json(fake_claude):
+    assert "\n" in PRETTY
+    fake_claude(PRETTY)
+    assert llm.extract_metadata("page") == EXPECTED
+
+
+def test_metadata_pretty_printed_json_in_code_fence_with_chatter(fake_claude):
+    fake_claude("Here is the metadata:\n```json\n" + PRETTY + "\n```\nLet me know if you need more.")
+    assert llm.extract_metadata("page") == EXPECTED
+
+
+def test_metadata_multiline_abstract_value(fake_claude):
+    # a JSON string can't contain raw newlines, but the object around it spans many lines
+    reply = '{\n  "title": "T",\n  "authors": [\n    "X",\n    "Y"\n  ],\n  "year": 2020,\n  "abstract": "line1\\nline2"\n}'
+    fake_claude(reply)
+    out = llm.extract_metadata("page")
+    assert out["authors"] == "X, Y" and out["abstract"] == "line1\nline2"
+
+
+# --- summaries need room for four sections ---------------------------------------
+def test_summary_gets_enough_tokens(fake_claude):
+    msgs = fake_claude("## Problem\n...")
+    llm.summarize("T", "body")
+    assert msgs.calls[0]["max_tokens"] >= 1000

@@ -76,3 +76,32 @@ def test_fetch_and_extract(monkeypatch, fake_response, pdf_bytes):
     path, text = pdf.fetch_and_extract("2401.00001v1")
     assert path.endswith("2401.00001.pdf")
     assert "Body text" in text
+
+
+def test_pages_stay_separated_in_real_pdf(tmp_path, pdf_bytes):
+    p = tmp_path / "a.pdf"
+    p.write_bytes(pdf_bytes(["endofpageone", "startofpagetwo"]))
+    words = pdf.extract_text(p).split()
+    assert "endofpageone" in words and "startofpagetwo" in words  # not run together
+
+
+def test_extract_text_separates_pages_even_without_trailing_newline(monkeypatch, tmp_path):
+    """Pages whose text doesn't end in a newline must still not run into the next page."""
+    class FakePage:
+        def __init__(self, text):
+            self.text = text
+
+        def get_text(self):
+            return self.text
+
+    class FakeDoc(list):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(pdf.fitz, "open", lambda path: FakeDoc([FakePage("end of page one"),
+                                                                FakePage("start of page two")]))
+    words = pdf.extract_text("ignored.pdf").split()
+    assert words == ["end", "of", "page", "one", "start", "of", "page", "two"]
