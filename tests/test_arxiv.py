@@ -1,3 +1,5 @@
+import xml.etree.ElementTree as ET
+
 import httpx
 import pytest
 
@@ -24,6 +26,7 @@ def test_parses_entries(monkeypatch, fake_response, arxiv_xml):
     assert r["authors"] == ["Ada Lovelace", "Alan Turing"]
     assert r["year"] == 2024
     assert r["pdf_url"] == "https://arxiv.org/pdf/2401.00001v2"
+    assert r["url"] == "http://arxiv.org/abs/2401.00001v2"  # link to the paper
 
 
 def test_old_style_id_missing_year_and_authors(monkeypatch, fake_response, arxiv_xml):
@@ -32,6 +35,7 @@ def test_old_style_id_missing_year_and_authors(monkeypatch, fake_response, arxiv
     assert r["arxiv_id"] == "cs/0101001v1"
     assert r["year"] is None
     assert r["authors"] == []
+    assert r["url"] == "http://arxiv.org/abs/cs/0101001v1"
 
 
 def test_no_results(monkeypatch, fake_response):
@@ -48,7 +52,7 @@ def test_http_error_propagates(monkeypatch, fake_response):
 
 def test_malformed_xml_raises(monkeypatch, fake_response):
     monkeypatch.setattr(httpx, "get", lambda *a, **k: fake_response(text="not xml"))
-    with pytest.raises(Exception):
+    with pytest.raises(ET.ParseError):
         arxiv.search_arxiv("x")
 
 

@@ -9,11 +9,16 @@ import llm
 
 # ---------------------------------------------------------------- search
 def test_search_ok(client, monkeypatch):
-    seen = {}
-    monkeypatch.setattr(app_module, "search_arxiv", lambda q: seen.setdefault("q", q) and [{"arxiv_id": "1"}])
+    queries = []
+
+    def fake_search(q):
+        queries.append(q)
+        return [{"arxiv_id": "1"}]
+
+    monkeypatch.setattr(app_module, "search_arxiv", fake_search)
     r = client.get("/api/search", params={"q": "  deep learning  "})
     assert r.status_code == 200 and r.json() == [{"arxiv_id": "1"}]
-    assert seen["q"] == "deep learning"  # trimmed
+    assert queries == ["deep learning"]  # trimmed
 
 
 @pytest.mark.parametrize("q", ["", "   "])
@@ -42,8 +47,17 @@ def test_save_paper_success(client, monkeypatch, sample_paper):
     assert body["warning"] is None
     p = body["paper"]
     assert p["arxiv_id"] == "2401.00001"  # version stripped
+    assert p["title"] == "Sample Paper"
     assert p["authors"] == "A One, B Two"
+    assert p["year"] == 2024
+    assert p["abstract"] == "An abstract."
+    assert p["url"] == "http://arxiv.org/abs/2401.00001v2"
+    assert p["pdf_path"] == "/tmp/x.pdf"
     assert p["has_text"] == 1 and p["source"] == "arxiv"
+    stored = db.get_paper(p["id"], full_text=True)  # really persisted, not just echoed
+    assert stored["full_text"] == "full text" and stored["title"] == "Sample Paper"
+    assert stored["authors"] == "A One, B Two" and stored["year"] == 2024
+    assert stored["abstract"] == "An abstract." and stored["url"] == "http://arxiv.org/abs/2401.00001v2"
 
 
 def test_save_paper_pdf_failure_keeps_metadata(client, monkeypatch, sample_paper):
@@ -92,15 +106,30 @@ def test_upload_success(client, monkeypatch, pdf_bytes, temp_storage):
     assert r.status_code == 200
     p = r.json()["paper"]
     assert p["title"] == "Extracted Title" and p["source"] == "upload" and p["arxiv_id"] is None
+    assert p["authors"] == "A, B"
+    assert p["year"] == 2022
+    assert p["abstract"] == "Abs"
+    assert p["url"] == ""
     assert p["has_text"] == 1
-    assert len(list((temp_storage / "pdfs").glob("upload_*.pdf"))) == 1
+    files = list((temp_storage / "pdfs").glob("upload_*.pdf"))
+    assert len(files) == 1 and p["pdf_path"] == str(files[0])
+    stored = db.get_paper(p["id"], full_text=True)
+    assert "Title page text" in stored["full_text"]
+    assert (stored["title"], stored["authors"], stored["year"], stored["abstract"], stored["url"]) == (
+        "Extracted Title", "A, B", 2022, "Abs", "")
 
 
 def test_upload_passes_first_page_to_llm(client, monkeypatch, pdf_bytes):
-    got = {}
-    monkeypatch.setattr(llm, "extract_metadata", lambda t: got.setdefault("t", t) and _meta())
-    _upload(client, pdf_bytes(["FIRSTPAGE", "SECONDPAGE"]))
-    assert "FIRSTPAGE" in got["t"] and "SECONDPAGE" not in got["t"]
+    received = []
+
+    def fake_extract(first_page):
+        received.append(first_page)
+        return _meta()
+
+    monkeypatch.setattr(llm, "extract_metadata", fake_extract)
+    assert _upload(client, pdf_bytes(["FIRSTPAGE", "SECONDPAGE"])).status_code == 200
+    assert len(received) == 1
+    assert "FIRSTPAGE" in received[0] and "SECONDPAGE" not in received[0]
 
 
 def test_upload_title_falls_back_to_filename(client, monkeypatch, pdf_bytes):
@@ -144,7 +173,12 @@ def test_upload_missing_file_422(client):
 def test_summarize_generates_and_caches(client, monkeypatch, add_paper):
     pid = add_paper()
     calls = []
-    monkeypatch.setattr(llm, "summarize", lambda t, x: calls.append(1) or ("## Problem\nS", False))
+
+    def fake_summarize(title, text):
+        calls.append(title)
+        return "## Problem\nS", False
+
+    monkeypatch.setattr(llm, "summarize", fake_summarize)
     r1 = client.post(f"/api/papers/{pid}/summarize")
     assert r1.json() == {"summary": "## Problem\nS", "cached": False, "warning": None}
     r2 = client.post(f"/api/papers/{pid}/summarize")
@@ -186,10 +220,15 @@ def test_summarize_llm_error_502_not_cached(client, monkeypatch, add_paper):
 def test_missing_text_retries_download(client, monkeypatch, add_paper):
     pid = add_paper(full_text=None)
     monkeypatch.setattr(app_module, "fetch_and_extract", lambda i: ("/p.pdf", "recovered text"))
-    seen = {}
-    monkeypatch.setattr(llm, "summarize", lambda t, x: seen.setdefault("x", x) and ("S", False))
+    texts = []
+
+    def fake_summarize(title, text):
+        texts.append(text)
+        return "S", False
+
+    monkeypatch.setattr(llm, "summarize", fake_summarize)
     assert client.post(f"/api/papers/{pid}/summarize").status_code == 200
-    assert seen["x"] == "recovered text"
+    assert texts == ["recovered text"]
     stored = db.get_paper(pid, full_text=True)
     assert stored["full_text"] == "recovered text" and stored["pdf_path"] == "/p.pdf"
 
@@ -219,12 +258,16 @@ def test_upload_without_text_422(client, add_paper):
 # ---------------------------------------------------------------- ask
 def test_ask_success(client, monkeypatch, add_paper):
     pid = add_paper()
-    seen = {}
-    monkeypatch.setattr(llm, "answer_question",
-                        lambda t, x, q: seen.update(q=q) or ("Because.", False))
+    questions = []
+
+    def fake_answer(title, text, question):
+        questions.append(question)
+        return "Because.", False
+
+    monkeypatch.setattr(llm, "answer_question", fake_answer)
     r = client.post(f"/api/papers/{pid}/ask", json={"question": "  Why?  "})
     assert r.status_code == 200 and r.json() == {"answer": "Because.", "warning": None}
-    assert seen["q"] == "Why?"
+    assert questions == ["Why?"]
 
 
 @pytest.mark.parametrize("q", ["", "   \n"])
@@ -254,7 +297,8 @@ def test_ask_llm_error_502(client, monkeypatch, add_paper):
 def test_ask_truncation_warning(client, monkeypatch, add_paper):
     pid = add_paper()
     monkeypatch.setattr(llm, "answer_question", lambda t, x, q: ("a", True))
-    assert client.post(f"/api/papers/{pid}/ask", json={"question": "hi"}).json()["warning"]
+    warning = client.post(f"/api/papers/{pid}/ask", json={"question": "hi"}).json()["warning"]
+    assert warning == "This paper is very long, so only the first part of its text was used."
 
 
 # ---------------------------------------------------------------- library CRUD
@@ -292,11 +336,15 @@ def test_delete_removes_row_and_pdf(client, add_paper, temp_storage):
 def test_delete_with_missing_pdf_file_ok(client, add_paper, temp_storage):
     pid = add_paper(pdf_path=str(temp_storage / "pdfs" / "gone.pdf"))
     assert client.delete(f"/api/papers/{pid}").status_code == 200
+    assert client.get(f"/api/papers/{pid}").status_code == 404
+    assert db.get_paper(pid) is None
 
 
 def test_delete_without_pdf_path(client, add_paper):
     pid = add_paper(pdf_path=None)
     assert client.delete(f"/api/papers/{pid}").status_code == 200
+    assert client.get(f"/api/papers/{pid}").status_code == 404
+    assert db.get_paper(pid) is None
 
 
 def test_delete_404(client):

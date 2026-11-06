@@ -1,4 +1,5 @@
 import httpx
+import pymupdf
 import pytest
 
 import pdf
@@ -66,7 +67,7 @@ def test_blank_pdf_gives_empty_text(tmp_path, pdf_bytes):
 def test_extract_invalid_file_raises(tmp_path):
     p = tmp_path / "bad.pdf"
     p.write_bytes(b"this is not a pdf")
-    with pytest.raises(Exception):
+    with pytest.raises(pymupdf.FileDataError):
         pdf.extract_text(p)
 
 

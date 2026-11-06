@@ -27,6 +27,7 @@ os.environ.pop("ANTHROPIC_API_KEY", None)
 
 import fitz  # noqa: E402
 import httpx  # noqa: E402
+import httpx2  # noqa: E402  (the anthropic SDK uses this, not httpx)
 
 import app as app_module  # noqa: E402
 import db  # noqa: E402
@@ -59,13 +60,25 @@ def no_api_key(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
 
+class NetworkBlocked(BaseException):
+    """BaseException on purpose: the Anthropic SDK catches Exception and retries/wraps it,
+    which would hide an accidental real call. This can't be swallowed that way."""
+
+
 @pytest.fixture(autouse=True)
 def block_network(monkeypatch):
-    """Any un-mocked HTTP call (arXiv or Anthropic) fails loudly."""
+    """Any un-mocked HTTP call fails loudly. Covers httpx (arXiv) and httpx2 (anthropic SDK).
+
+    We block the real socket transport rather than Client.send, because FastAPI's TestClient
+    (also built on httpx2) uses Client.send with an in-process ASGI transport.
+    """
     def _blocked(*a, **kw):
-        raise AssertionError("Real network access attempted in a test")
-    monkeypatch.setattr(httpx, "get", _blocked)
-    monkeypatch.setattr(httpx.Client, "send", _blocked)
+        raise NetworkBlocked("Real network access attempted in a test")
+    for lib in (httpx, httpx2):
+        monkeypatch.setattr(lib, "get", _blocked)
+        monkeypatch.setattr(lib, "post", _blocked)
+        monkeypatch.setattr(lib.HTTPTransport, "handle_request", _blocked)
+        monkeypatch.setattr(lib.AsyncHTTPTransport, "handle_async_request", _blocked)
 
 
 @pytest.fixture

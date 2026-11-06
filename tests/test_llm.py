@@ -143,7 +143,11 @@ def test_answer_question(fake_claude):
     msgs = fake_claude("The answer.")
     ans, trunc = llm.answer_question("T", "paper body", "What is X?")
     assert ans == "The answer." and trunc is False
-    assert msgs.calls[0]["system"] == llm.QA_SYSTEM
+    system = msgs.calls[0]["system"].lower()
+    # The instruction must actually restrict the model to the paper's text
+    assert "only" in system and "paper" in system
+    assert "outside knowledge" in system
+    assert "does not contain the answer" in system and "say so" in system
     content = msgs.calls[0]["messages"][0]["content"]
     assert "paper body" in content and "What is X?" in content
 
