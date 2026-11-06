@@ -78,6 +78,40 @@ Then open <http://localhost:8000>. Run it from the project root: the app uses re
 
 The database and PDFs are created under `data/` on first start. Delete that folder to reset the library.
 
+## Testing
+
+The automated tests use [pytest](https://docs.pytest.org/). They never call the real arXiv or Anthropic APIs (both are mocked, and any un-mocked network call fails the test), and they never touch your `data/` folder or `data/library.db` (every test runs against a temporary database and PDF directory). No API key is needed to run them.
+
+**Install the dev dependencies** (inside your activated virtual environment):
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+**Run the tests.** Use `python -m pytest` rather than bare `pytest`, so the virtual environment's pytest is used instead of a system-wide one:
+
+```bash
+python -m pytest
+```
+
+**Reproduce the coverage numbers** (line and branch coverage for the five application modules):
+
+```bash
+python -m pytest --cov=app --cov=arxiv --cov=db --cov=llm --cov=pdf --cov-branch --cov-report=term-missing
+```
+
+**Run the mutation tests.** [mutmut](https://github.com/boxed/mutmut) could not run this suite, so `mutation/run_mutants.py` is a small purpose-built script instead. It applies about 50 hand-written mutants (changed status codes, comparison operators, boundary values, prompt strings, deleted cleanup logic) one at a time to a temporary copy of the source, runs the tests against each, and reports how many were killed or survived. Your real source files are never modified. It takes a few minutes:
+
+```bash
+python mutation/run_mutants.py --tests tests --label current
+```
+
+Per-mutant results are written to `mutation/results/<label>.json` (git-ignored). The original first-round tests are kept in `mutation/round0_tests/tests` for comparison:
+
+```bash
+python mutation/run_mutants.py --tests mutation/round0_tests/tests --label round0
+```
+
 ## Limitations
 
 - **No authentication or multi-user support.** It's a local single-user tool; don't expose it to the internet.
@@ -87,7 +121,7 @@ The database and PDFs are created under `data/` on first start. Delete that fold
 - **Requests are blocking.** There is no streaming, so summaries take 10-30 seconds with a spinner.
 - **Search is basic.** Results are the top 10 from arXiv's `all:` keyword query, with no pagination or filters.
 - **Markdown rendering needs internet access** to load `marked` and `DOMPurify` from a CDN. Without it, responses show as plain text.
-- **No automated tests.** Features were checked manually.
+- **Test coverage is backend-only.** The automated tests cover the Python code; the browser UI (`static/index.html`) was checked manually.
 
 ## How this was built
 
