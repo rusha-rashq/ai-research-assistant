@@ -1,0 +1,852 @@
+"""Shared fixtures.
+
+Safety: app.py calls db.init_db() at import time and uses relative paths
+("data", "static"). To keep the real data/ folder untouched we chdir into a
+throwaway directory (with a copy of static/) BEFORE importing any app module,
+and every test additionally gets its own temp DB / PDF dir. All network access
+(arXiv via httpx, Anthropic) is blocked unless a test mocks it explicitly.
+"""
+import atexit
+import os
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# --- import-time sandbox -----------------------------------------------------
+_SANDBOX = Path(tempfile.mkdtemp(prefix="ara-sandbox-"))
+shutil.copytree(ROOT / "static", _SANDBOX / "static")
+_ORIG_CWD = os.getcwd()
+os.chdir(_SANDBOX)
+sys.path.insert(0, str(ROOT))
+os.environ.pop("ANTHROPIC_API_KEY", None)
+
+import fitz  # noqa: E402
+import httpx  # noqa: E402
+
+import app as app_module  # noqa: E402
+import db  # noqa: E402
+import pdf  # noqa: E402
+
+
+@atexit.register
+def _cleanup():
+    os.chdir(_ORIG_CWD)
+    shutil.rmtree(_SANDBOX, ignore_errors=True)
+
+
+# --- per-test fixtures ---------------------------------------------------------
+@pytest.fixture(autouse=True)
+def temp_storage(tmp_path, monkeypatch):
+    """Fresh DB + PDF directory per test; never touches the real data/."""
+    data_dir = tmp_path / "data"
+    pdf_dir = data_dir / "pdfs"
+    monkeypatch.setattr(db, "DATA_DIR", data_dir)
+    monkeypatch.setattr(db, "PDF_DIR", pdf_dir)
+    monkeypatch.setattr(db, "DB_PATH", data_dir / "library.db")
+    monkeypatch.setattr(pdf, "PDF_DIR", pdf_dir)
+    db.init_db()
+    return data_dir
+
+
+@pytest.fixture(autouse=True)
+def no_api_key(monkeypatch):
+    """load_dotenv() may have pulled a real key from .env; start every test without one."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def block_network(monkeypatch):
+    """Any un-mocked HTTP call (arXiv or Anthropic) fails loudly."""
+    def _blocked(*a, **kw):
+        raise AssertionError("Real network access attempted in a test")
+    monkeypatch.setattr(httpx, "get", _blocked)
+    monkeypatch.setattr(httpx.Client, "send", _blocked)
+
+
+@pytest.fixture
+def client():
+    from fastapi.testclient import TestClient
+    return TestClient(app_module.app)
+
+
+@pytest.fixture
+def api_key(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+
+# --- helpers -------------------------------------------------------------------
+def make_pdf_bytes(pages=("Hello world. This is page one.",)):
+    doc = fitz.open()
+    for text in pages:
+        page = doc.new_page()
+        if text:
+            page.insert_text((72, 72), text)
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+@pytest.fixture
+def pdf_bytes():
+    return make_pdf_bytes
+
+
+class FakeResponse:
+    def __init__(self, text="", content=b"", status=200):
+        self.text, self.content, self.status_code = text, content, status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            req = httpx.Request("GET", "http://test")
+            raise httpx.HTTPStatusError("boom", request=req, response=httpx.Response(self.status_code, request=req))
+
+
+@pytest.fixture
+def fake_response():
+    return FakeResponse
+
+
+ARXIV_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2401.00001v2</id>
+    <published>2024-01-02T00:00:00Z</published>
+    <title>  Attention   Is
+      Still All You Need </title>
+    <summary>  An abstract
+      spanning lines. </summary>
+    <author><name>Ada Lovelace</name></author>
+    <author><name> Alan  Turing </name></author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/cs/0101001v1</id>
+    <published></published>
+    <title>Old Style</title>
+    <summary>Old.</summary>
+  </entry>
+</feed>"""
+
+
+@pytest.fixture
+def arxiv_xml():
+    return ARXIV_XML
+
+
+SAMPLE_PAPER = dict(
+    arxiv_id="2401.00001v2", title="Sample Paper", authors=["A One", "B Two"],
+    year=2024, abstract="An abstract.", url="http://arxiv.org/abs/2401.00001v2",
+)
+
+
+@pytest.fixture
+def sample_paper():
+    return dict(SAMPLE_PAPER)
+
+
+@pytest.fixture
+def add_paper():
+    """Insert a paper straight into the temp DB."""
+    def _add(**over):
+        f = dict(source="arxiv", arxiv_id="2401.00001", title="T", authors="A", year=2024,
+                 abstract="abs", url="u", pdf_path=None, full_text="full text")
+        f.update(over)
+        return db.add_paper(**f)
+    return _add
+"""HTTP-level tests of the FastAPI app with arXiv/PDF/LLM mocked."""
+import httpx
+import pytest
+
+import app as app_module
+import db
+import llm
+
+
+# ---------------------------------------------------------------- search
+def test_search_ok(client, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(app_module, "search_arxiv", lambda q: seen.setdefault("q", q) and [{"arxiv_id": "1"}])
+    r = client.get("/api/search", params={"q": "  deep learning  "})
+    assert r.status_code == 200 and r.json() == [{"arxiv_id": "1"}]
+    assert seen["q"] == "deep learning"  # trimmed
+
+
+@pytest.mark.parametrize("q", ["", "   "])
+def test_search_blank_400(client, q):
+    assert client.get("/api/search", params={"q": q}).status_code == 400
+
+
+def test_search_missing_param_422(client):
+    assert client.get("/api/search").status_code == 422
+
+
+def test_search_arxiv_failure_502(client, monkeypatch):
+    def boom(q):
+        raise httpx.ConnectError("down")
+    monkeypatch.setattr(app_module, "search_arxiv", boom)
+    r = client.get("/api/search", params={"q": "x"})
+    assert r.status_code == 502 and "arXiv request failed" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------- save
+def test_save_paper_success(client, monkeypatch, sample_paper):
+    monkeypatch.setattr(app_module, "fetch_and_extract", lambda i: ("/tmp/x.pdf", "full text"))
+    r = client.post("/api/papers", json=sample_paper)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["warning"] is None
+    p = body["paper"]
+    assert p["arxiv_id"] == "2401.00001"  # version stripped
+    assert p["authors"] == "A One, B Two"
+    assert p["has_text"] == 1 and p["source"] == "arxiv"
+
+
+def test_save_paper_pdf_failure_keeps_metadata(client, monkeypatch, sample_paper):
+    def boom(i):
+        raise httpx.ConnectError("offline")
+    monkeypatch.setattr(app_module, "fetch_and_extract", boom)
+    r = client.post("/api/papers", json=sample_paper)
+    assert r.status_code == 200
+    assert "Saved metadata only" in r.json()["warning"]
+    assert r.json()["paper"]["has_text"] == 0
+
+
+def test_save_duplicate_409_even_with_different_version(client, monkeypatch, sample_paper):
+    monkeypatch.setattr(app_module, "fetch_and_extract", lambda i: ("/tmp/x.pdf", "t"))
+    assert client.post("/api/papers", json=sample_paper).status_code == 200
+    again = dict(sample_paper, arxiv_id="2401.00001v5")
+    assert client.post("/api/papers", json=again).status_code == 409
+    assert len(db.list_papers()) == 1
+
+
+def test_save_minimal_payload_defaults(client, monkeypatch):
+    monkeypatch.setattr(app_module, "fetch_and_extract", lambda i: ("/p", "t"))
+    r = client.post("/api/papers", json={"arxiv_id": "1234.5678", "title": "Only"})
+    assert r.status_code == 200
+    assert r.json()["paper"]["authors"] == "" and r.json()["paper"]["year"] is None
+
+
+def test_save_invalid_payload_422(client):
+    assert client.post("/api/papers", json={"title": "no id"}).status_code == 422
+
+
+# ---------------------------------------------------------------- upload
+def _meta(**over):
+    d = {"title": "Extracted Title", "authors": "A, B", "year": 2022, "abstract": "Abs"}
+    d.update(over)
+    return d
+
+
+def _upload(client, data, name="paper.pdf"):
+    return client.post("/api/upload", files={"file": (name, data, "application/pdf")})
+
+
+def test_upload_success(client, monkeypatch, pdf_bytes, temp_storage):
+    monkeypatch.setattr(llm, "extract_metadata", lambda t: _meta())
+    r = _upload(client, pdf_bytes(["Title page text"]))
+    assert r.status_code == 200
+    p = r.json()["paper"]
+    assert p["title"] == "Extracted Title" and p["source"] == "upload" and p["arxiv_id"] is None
+    assert p["has_text"] == 1
+    assert len(list((temp_storage / "pdfs").glob("upload_*.pdf"))) == 1
+
+
+def test_upload_passes_first_page_to_llm(client, monkeypatch, pdf_bytes):
+    got = {}
+    monkeypatch.setattr(llm, "extract_metadata", lambda t: got.setdefault("t", t) and _meta())
+    _upload(client, pdf_bytes(["FIRSTPAGE", "SECONDPAGE"]))
+    assert "FIRSTPAGE" in got["t"] and "SECONDPAGE" not in got["t"]
+
+
+def test_upload_title_falls_back_to_filename(client, monkeypatch, pdf_bytes):
+    monkeypatch.setattr(llm, "extract_metadata", lambda t: _meta(title=""))
+    r = _upload(client, pdf_bytes(), name="my-notes.pdf")
+    assert r.json()["paper"]["title"] == "my-notes.pdf"
+
+
+def test_upload_not_a_pdf_400_and_cleans_up(client, temp_storage):
+    r = _upload(client, b"plain text, not pdf")
+    assert r.status_code == 400
+    assert list((temp_storage / "pdfs").iterdir()) == []
+
+
+def test_upload_empty_file_400(client, temp_storage):
+    assert _upload(client, b"").status_code == 400
+    assert list((temp_storage / "pdfs").iterdir()) == []
+
+
+def test_upload_scanned_pdf_422(client, pdf_bytes, temp_storage):
+    r = _upload(client, pdf_bytes([""]))
+    assert r.status_code == 422 and "No text found" in r.json()["detail"]
+    assert list((temp_storage / "pdfs").iterdir()) == []
+
+
+def test_upload_llm_error_502_and_cleans_up(client, monkeypatch, pdf_bytes, temp_storage):
+    def boom(t):
+        raise llm.LLMError("no key")
+    monkeypatch.setattr(llm, "extract_metadata", boom)
+    r = _upload(client, pdf_bytes())
+    assert r.status_code == 502 and r.json()["detail"] == "no key"
+    assert list((temp_storage / "pdfs").iterdir()) == []
+    assert db.list_papers() == []
+
+
+def test_upload_missing_file_422(client):
+    assert client.post("/api/upload").status_code == 422
+
+
+# ---------------------------------------------------------------- summarize
+def test_summarize_generates_and_caches(client, monkeypatch, add_paper):
+    pid = add_paper()
+    calls = []
+    monkeypatch.setattr(llm, "summarize", lambda t, x: calls.append(1) or ("## Problem\nS", False))
+    r1 = client.post(f"/api/papers/{pid}/summarize")
+    assert r1.json() == {"summary": "## Problem\nS", "cached": False, "warning": None}
+    r2 = client.post(f"/api/papers/{pid}/summarize")
+    assert r2.json()["cached"] is True
+    assert len(calls) == 1
+    assert db.get_paper(pid)["summary"] == "## Problem\nS"
+
+
+def test_summarize_force_regenerates(client, monkeypatch, add_paper):
+    pid = add_paper()
+    out = iter([("one", False), ("two", False)])
+    monkeypatch.setattr(llm, "summarize", lambda t, x: next(out))
+    client.post(f"/api/papers/{pid}/summarize")
+    r = client.post(f"/api/papers/{pid}/summarize", params={"force": "true"})
+    assert r.json()["summary"] == "two" and r.json()["cached"] is False
+
+
+def test_summarize_truncation_warning(client, monkeypatch, add_paper):
+    pid = add_paper()
+    monkeypatch.setattr(llm, "summarize", lambda t, x: ("s", True))
+    assert "very long" in client.post(f"/api/papers/{pid}/summarize").json()["warning"]
+
+
+def test_summarize_404(client):
+    assert client.post("/api/papers/999/summarize").status_code == 404
+
+
+def test_summarize_llm_error_502_not_cached(client, monkeypatch, add_paper):
+    pid = add_paper()
+
+    def boom(t, x):
+        raise llm.LLMError("api down")
+    monkeypatch.setattr(llm, "summarize", boom)
+    assert client.post(f"/api/papers/{pid}/summarize").status_code == 502
+    assert db.get_paper(pid)["summary"] is None
+
+
+# ---------------------------------------------------------------- retry download
+def test_missing_text_retries_download(client, monkeypatch, add_paper):
+    pid = add_paper(full_text=None)
+    monkeypatch.setattr(app_module, "fetch_and_extract", lambda i: ("/p.pdf", "recovered text"))
+    seen = {}
+    monkeypatch.setattr(llm, "summarize", lambda t, x: seen.setdefault("x", x) and ("S", False))
+    assert client.post(f"/api/papers/{pid}/summarize").status_code == 200
+    assert seen["x"] == "recovered text"
+    stored = db.get_paper(pid, full_text=True)
+    assert stored["full_text"] == "recovered text" and stored["pdf_path"] == "/p.pdf"
+
+
+def test_retry_download_fails_502(client, monkeypatch, add_paper):
+    pid = add_paper(full_text=None)
+
+    def boom(i):
+        raise httpx.ConnectError("x")
+    monkeypatch.setattr(app_module, "fetch_and_extract", boom)
+    r = client.post(f"/api/papers/{pid}/summarize")
+    assert r.status_code == 502 and "PDF download failed" in r.json()["detail"]
+
+
+def test_retry_download_empty_text_422(client, monkeypatch, add_paper):
+    pid = add_paper(full_text=None)
+    monkeypatch.setattr(app_module, "fetch_and_extract", lambda i: ("/p.pdf", ""))
+    assert client.post(f"/api/papers/{pid}/summarize").status_code == 422
+
+
+def test_upload_without_text_422(client, add_paper):
+    pid = add_paper(source="upload", arxiv_id=None, full_text=None)
+    r = client.post(f"/api/papers/{pid}/summarize")
+    assert r.status_code == 422 and "no stored full text" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------- ask
+def test_ask_success(client, monkeypatch, add_paper):
+    pid = add_paper()
+    seen = {}
+    monkeypatch.setattr(llm, "answer_question",
+                        lambda t, x, q: seen.update(q=q) or ("Because.", False))
+    r = client.post(f"/api/papers/{pid}/ask", json={"question": "  Why?  "})
+    assert r.status_code == 200 and r.json() == {"answer": "Because.", "warning": None}
+    assert seen["q"] == "Why?"
+
+
+@pytest.mark.parametrize("q", ["", "   \n"])
+def test_ask_blank_400(client, add_paper, q):
+    pid = add_paper()
+    assert client.post(f"/api/papers/{pid}/ask", json={"question": q}).status_code == 400
+
+
+def test_ask_missing_body_422(client, add_paper):
+    pid = add_paper()
+    assert client.post(f"/api/papers/{pid}/ask", json={}).status_code == 422
+
+
+def test_ask_404(client):
+    assert client.post("/api/papers/999/ask", json={"question": "hi"}).status_code == 404
+
+
+def test_ask_llm_error_502(client, monkeypatch, add_paper):
+    pid = add_paper()
+
+    def boom(t, x, q):
+        raise llm.LLMError("nope")
+    monkeypatch.setattr(llm, "answer_question", boom)
+    assert client.post(f"/api/papers/{pid}/ask", json={"question": "hi"}).status_code == 502
+
+
+def test_ask_truncation_warning(client, monkeypatch, add_paper):
+    pid = add_paper()
+    monkeypatch.setattr(llm, "answer_question", lambda t, x, q: ("a", True))
+    assert client.post(f"/api/papers/{pid}/ask", json={"question": "hi"}).json()["warning"]
+
+
+# ---------------------------------------------------------------- library CRUD
+def test_list_empty_and_ordering(client, add_paper):
+    assert client.get("/api/papers").json() == []
+    a = add_paper(arxiv_id="1")
+    b = add_paper(arxiv_id="2")
+    assert [p["id"] for p in client.get("/api/papers").json()] == [b, a]
+
+
+def test_list_excludes_full_text(client, add_paper):
+    add_paper()
+    assert "full_text" not in client.get("/api/papers").json()[0]
+
+
+def test_get_paper_and_404(client, add_paper):
+    pid = add_paper(title="Findme")
+    assert client.get(f"/api/papers/{pid}").json()["title"] == "Findme"
+    assert client.get("/api/papers/999").status_code == 404
+
+
+def test_get_paper_non_int_id_422(client):
+    assert client.get("/api/papers/abc").status_code == 422
+
+
+def test_delete_removes_row_and_pdf(client, add_paper, temp_storage):
+    f = temp_storage / "pdfs" / "x.pdf"
+    f.write_bytes(b"%PDF")
+    pid = add_paper(pdf_path=str(f))
+    assert client.delete(f"/api/papers/{pid}").json() == {"ok": True}
+    assert not f.exists()
+    assert client.get(f"/api/papers/{pid}").status_code == 404
+
+
+def test_delete_with_missing_pdf_file_ok(client, add_paper, temp_storage):
+    pid = add_paper(pdf_path=str(temp_storage / "pdfs" / "gone.pdf"))
+    assert client.delete(f"/api/papers/{pid}").status_code == 200
+
+
+def test_delete_without_pdf_path(client, add_paper):
+    pid = add_paper(pdf_path=None)
+    assert client.delete(f"/api/papers/{pid}").status_code == 200
+
+
+def test_delete_404(client):
+    assert client.delete("/api/papers/999").status_code == 404
+
+
+def test_index_serves_html(client):
+    r = client.get("/")
+    assert r.status_code == 200 and "<html" in r.text.lower()
+
+
+# ---------------------------------------------------------------- isolation guard
+def test_tests_use_temp_db(temp_storage):
+    from pathlib import Path
+    assert db.DB_PATH.parent == temp_storage
+    assert Path(db.DB_PATH).resolve() != (Path(__file__).resolve().parent.parent / "data" / "library.db")
+import httpx
+import pytest
+
+import arxiv
+
+
+def test_parses_entries(monkeypatch, fake_response, arxiv_xml):
+    calls = {}
+
+    def fake_get(url, **kw):
+        calls.update(url=url, **kw)
+        return fake_response(text=arxiv_xml)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    results = arxiv.search_arxiv("transformers", max_results=5)
+
+    assert calls["params"]["search_query"] == "all:transformers"
+    assert calls["params"]["max_results"] == 5
+    assert len(results) == 2
+    r = results[0]
+    assert r["arxiv_id"] == "2401.00001v2"
+    assert r["title"] == "Attention Is Still All You Need"  # whitespace normalised
+    assert r["abstract"] == "An abstract spanning lines."
+    assert r["authors"] == ["Ada Lovelace", "Alan Turing"]
+    assert r["year"] == 2024
+    assert r["pdf_url"] == "https://arxiv.org/pdf/2401.00001v2"
+
+
+def test_old_style_id_missing_year_and_authors(monkeypatch, fake_response, arxiv_xml):
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: fake_response(text=arxiv_xml))
+    r = arxiv.search_arxiv("x")[1]
+    assert r["arxiv_id"] == "cs/0101001v1"
+    assert r["year"] is None
+    assert r["authors"] == []
+
+
+def test_no_results(monkeypatch, fake_response):
+    xml = '<feed xmlns="http://www.w3.org/2005/Atom"></feed>'
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: fake_response(text=xml))
+    assert arxiv.search_arxiv("nothing") == []
+
+
+def test_http_error_propagates(monkeypatch, fake_response):
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: fake_response(status=503))
+    with pytest.raises(httpx.HTTPStatusError):
+        arxiv.search_arxiv("x")
+
+
+def test_malformed_xml_raises(monkeypatch, fake_response):
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: fake_response(text="not xml"))
+    with pytest.raises(Exception):
+        arxiv.search_arxiv("x")
+
+
+def test_clean_handles_none():
+    assert arxiv._clean(None) == ""
+    assert arxiv._clean("  a \n b ") == "a b"
+import sqlite3
+
+import pytest
+
+import db
+
+
+def test_add_and_get(add_paper):
+    pid = add_paper(title="Hello")
+    p = db.get_paper(pid)
+    assert p["title"] == "Hello"
+    assert p["has_text"] == 1
+    assert "full_text" not in p  # excluded from light queries
+
+
+def test_get_with_full_text(add_paper):
+    pid = add_paper(full_text="BODY")
+    assert db.get_paper(pid, full_text=True)["full_text"] == "BODY"
+
+
+def test_has_text_false_when_null(add_paper):
+    pid = add_paper(full_text=None)
+    assert db.get_paper(pid)["has_text"] == 0
+
+
+def test_get_missing_returns_none():
+    assert db.get_paper(999) is None
+
+
+def test_list_newest_first(add_paper):
+    a = add_paper(arxiv_id="1", title="first")
+    b = add_paper(arxiv_id="2", title="second")
+    assert [p["id"] for p in db.list_papers()] == [b, a]
+
+
+def test_list_empty():
+    assert db.list_papers() == []
+
+
+def test_find_by_arxiv_id(add_paper):
+    add_paper(arxiv_id="2401.00001")
+    assert db.find_by_arxiv_id("2401.00001")["arxiv_id"] == "2401.00001"
+    assert db.find_by_arxiv_id("nope") is None
+
+
+def test_arxiv_id_unique(add_paper):
+    add_paper(arxiv_id="dup")
+    with pytest.raises(sqlite3.IntegrityError):
+        add_paper(arxiv_id="dup")
+
+
+def test_uploads_may_have_null_arxiv_id(add_paper):
+    add_paper(source="upload", arxiv_id=None, title="a")
+    add_paper(source="upload", arxiv_id=None, title="b")
+    assert len(db.list_papers()) == 2
+
+
+def test_title_required(add_paper):
+    with pytest.raises(sqlite3.IntegrityError):
+        add_paper(title=None)
+
+
+def test_update(add_paper):
+    pid = add_paper()
+    db.update_paper(pid, summary="S", pdf_path="/x.pdf")
+    p = db.get_paper(pid)
+    assert p["summary"] == "S" and p["pdf_path"] == "/x.pdf"
+
+
+def test_delete(add_paper):
+    pid = add_paper()
+    db.delete_paper(pid)
+    assert db.get_paper(pid) is None
+
+
+def test_delete_missing_is_noop():
+    db.delete_paper(12345)
+
+
+def test_init_db_idempotent_and_creates_dirs(temp_storage):
+    db.init_db()
+    db.init_db()
+    assert (temp_storage / "pdfs").is_dir()
+    assert (temp_storage / "library.db").exists()
+
+
+def test_sql_injection_safe_values(add_paper):
+    pid = add_paper(title="x'); DROP TABLE papers;--")
+    assert db.get_paper(pid)["title"].startswith("x'")
+    assert len(db.list_papers()) == 1
+import json
+from types import SimpleNamespace
+
+import anthropic
+import httpx
+import pytest
+
+import llm
+
+
+class FakeMessages:
+    def __init__(self, reply=None, error=None):
+        self.reply, self.error, self.calls = reply, error, []
+
+    def create(self, **kw):
+        self.calls.append(kw)
+        if self.error:
+            raise self.error
+        return SimpleNamespace(content=self.reply)
+
+
+def text_block(t):
+    return SimpleNamespace(type="text", text=t)
+
+
+@pytest.fixture
+def fake_claude(monkeypatch, api_key):
+    def _install(reply="ok", error=None):
+        if isinstance(reply, str):
+            reply = [text_block(reply)]
+        msgs = FakeMessages(reply, error)
+        monkeypatch.setattr(llm.anthropic, "Anthropic", lambda: SimpleNamespace(messages=msgs))
+        return msgs
+    return _install
+
+
+def api_error():
+    return anthropic.APIError("kaboom", request=httpx.Request("POST", "http://x"), body=None)
+
+
+# --- ask_claude ---------------------------------------------------------------
+def test_missing_api_key_raises():
+    with pytest.raises(llm.LLMError, match="ANTHROPIC_API_KEY"):
+        llm.ask_claude("hi")
+
+
+def test_ask_claude_joins_text_blocks_only(fake_claude):
+    msgs = fake_claude([text_block("a"), SimpleNamespace(type="tool_use"), text_block("b")])
+    assert llm.ask_claude("hi") == "ab"
+    assert msgs.calls[0]["model"] == llm.MODEL
+    assert "system" not in msgs.calls[0]
+
+
+def test_ask_claude_passes_system_and_max_tokens(fake_claude):
+    msgs = fake_claude("x")
+    llm.ask_claude("hi", system="SYS", max_tokens=7)
+    assert msgs.calls[0]["system"] == "SYS" and msgs.calls[0]["max_tokens"] == 7
+
+
+def test_api_error_wrapped(fake_claude):
+    fake_claude(error=api_error())
+    with pytest.raises(llm.LLMError, match="Anthropic API error"):
+        llm.ask_claude("hi")
+
+
+# --- extract_metadata ---------------------------------------------------------
+GOOD = {"title": " A Title ", "authors": ["X", "Y"], "year": 2023, "abstract": " Abs "}
+
+
+def test_metadata_plain_json(fake_claude):
+    fake_claude(json.dumps(GOOD))
+    assert llm.extract_metadata("page") == {
+        "title": "A Title", "authors": "X, Y", "year": 2023, "abstract": "Abs"}
+
+
+def test_metadata_in_code_fence(fake_claude):
+    fake_claude("Sure!\n```json\n" + json.dumps(GOOD) + "\n```")
+    assert llm.extract_metadata("page")["title"] == "A Title"
+
+
+def test_metadata_prompt_contains_page(fake_claude):
+    msgs = fake_claude(json.dumps(GOOD))
+    llm.extract_metadata("UNIQUE-PAGE-TEXT")
+    assert "UNIQUE-PAGE-TEXT" in msgs.calls[0]["messages"][0]["content"]
+
+
+def test_metadata_missing_and_null_fields(fake_claude):
+    fake_claude('{"title": null, "authors": null, "year": null}')
+    assert llm.extract_metadata("p") == {"title": "", "authors": "", "year": None, "abstract": ""}
+
+
+def test_metadata_year_must_be_int(fake_claude):
+    fake_claude('{"title": "t", "year": "2023"}')
+    assert llm.extract_metadata("p")["year"] is None
+
+
+def test_metadata_authors_string_kept(fake_claude):
+    fake_claude('{"title": "t", "authors": "Solo Author"}')
+    assert llm.extract_metadata("p")["authors"] == "Solo Author"
+
+
+@pytest.mark.parametrize("reply", ["no json here", "{not: valid}", "[1, 2, 3]", ""])
+def test_metadata_invalid_raises(fake_claude, reply):
+    fake_claude(reply)
+    with pytest.raises(llm.LLMError, match="valid JSON"):
+        llm.extract_metadata("p")
+
+
+# --- prepare_text / summarize / answer_question ---------------------------------
+def test_prepare_text_short_unchanged():
+    assert llm.prepare_text("abc") == ("abc", False)
+
+
+def test_prepare_text_boundary_not_truncated():
+    t = "a" * llm.MAX_PAPER_CHARS
+    assert llm.prepare_text(t) == (t, False)
+
+
+def test_prepare_text_truncates():
+    t = "a" * (llm.MAX_PAPER_CHARS + 1)
+    out, trunc = llm.prepare_text(t)
+    assert trunc and len(out) == llm.MAX_PAPER_CHARS
+
+
+def test_summarize(fake_claude):
+    msgs = fake_claude("## Problem\n...")
+    summary, trunc = llm.summarize("My Title", "body text")
+    prompt = msgs.calls[0]["messages"][0]["content"]
+    assert summary.startswith("## Problem") and trunc is False
+    assert "My Title" in prompt and "body text" in prompt
+    for h in ("## Problem", "## Method", "## Key Results", "## Limitations"):
+        assert h in prompt
+
+
+def test_summarize_truncated_flag(fake_claude):
+    msgs = fake_claude("s")
+    _, trunc = llm.summarize("t", "a" * (llm.MAX_PAPER_CHARS + 10))
+    assert trunc is True
+    assert "a" * (llm.MAX_PAPER_CHARS + 1) not in msgs.calls[0]["messages"][0]["content"]
+
+
+def test_answer_question(fake_claude):
+    msgs = fake_claude("The answer.")
+    ans, trunc = llm.answer_question("T", "paper body", "What is X?")
+    assert ans == "The answer." and trunc is False
+    assert msgs.calls[0]["system"] == llm.QA_SYSTEM
+    content = msgs.calls[0]["messages"][0]["content"]
+    assert "paper body" in content and "What is X?" in content
+
+
+def test_summarize_propagates_llm_error(fake_claude):
+    fake_claude(error=api_error())
+    with pytest.raises(llm.LLMError):
+        llm.summarize("t", "b")
+import httpx
+import pytest
+
+import pdf
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("2401.00001v2", "2401.00001"),
+    ("2401.00001", "2401.00001"),
+    ("cs/0101001v1", "cs/0101001"),
+    ("2401.00001v12", "2401.00001"),
+    ("", ""),
+])
+def test_base_arxiv_id(raw, expected):
+    assert pdf.base_arxiv_id(raw) == expected
+
+
+def test_download_pdf_writes_file(monkeypatch, fake_response, pdf_bytes, temp_storage):
+    seen = {}
+
+    def fake_get(url, **kw):
+        seen["url"] = url
+        return fake_response(content=pdf_bytes())
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    path = pdf.download_pdf("2401.00001v2")
+    assert seen["url"] == "https://arxiv.org/pdf/2401.00001v2"
+    assert path.parent == temp_storage / "pdfs"
+    assert path.name == "2401.00001.pdf"
+    assert path.read_bytes().startswith(b"%PDF")
+
+
+def test_download_old_style_id_slash_replaced(monkeypatch, fake_response, pdf_bytes):
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: fake_response(content=pdf_bytes()))
+    assert pdf.download_pdf("cs/0101001v1").name == "cs_0101001.pdf"
+
+
+def test_download_http_error(monkeypatch, fake_response, temp_storage):
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: fake_response(status=404))
+    with pytest.raises(httpx.HTTPStatusError):
+        pdf.download_pdf("2401.00001")
+    assert list((temp_storage / "pdfs").iterdir()) == []
+
+
+def test_extract_text_multi_page(tmp_path, pdf_bytes):
+    p = tmp_path / "a.pdf"
+    p.write_bytes(pdf_bytes(["First page text", "Second page text"]))
+    text = pdf.extract_text(p)
+    assert "First page text" in text and "Second page text" in text
+
+
+def test_extract_first_page_only(tmp_path, pdf_bytes):
+    p = tmp_path / "a.pdf"
+    p.write_bytes(pdf_bytes(["First page text", "Second page text"]))
+    first = pdf.extract_first_page(p)
+    assert "First" in first and "Second" not in first
+
+
+def test_blank_pdf_gives_empty_text(tmp_path, pdf_bytes):
+    p = tmp_path / "blank.pdf"
+    p.write_bytes(pdf_bytes([""]))
+    assert pdf.extract_text(p) == ""
+    assert pdf.extract_first_page(p) == ""
+
+
+def test_extract_invalid_file_raises(tmp_path):
+    p = tmp_path / "bad.pdf"
+    p.write_bytes(b"this is not a pdf")
+    with pytest.raises(Exception):
+        pdf.extract_text(p)
+
+
+def test_fetch_and_extract(monkeypatch, fake_response, pdf_bytes):
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: fake_response(content=pdf_bytes(["Body text"])))
+    path, text = pdf.fetch_and_extract("2401.00001v1")
+    assert path.endswith("2401.00001.pdf")
+    assert "Body text" in text
