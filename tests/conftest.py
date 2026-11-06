@@ -40,6 +40,16 @@ def _cleanup():
     shutil.rmtree(_SANDBOX, ignore_errors=True)
 
 
+def pytest_configure(config):
+    """We chdir into a sandbox at import time, which would make relative --ignore/--ignore-glob
+    paths (e.g. `--ignore=tests/e2e`) resolve against the sandbox. Re-anchor them to where pytest
+    was started."""
+    inv = Path(config.invocation_params.dir)
+    for opt in ("ignore", "ignore_glob"):
+        vals = getattr(config.option, opt, None) or []
+        setattr(config.option, opt, [v if os.path.isabs(v) else str(inv / v) for v in vals])
+
+
 # --- per-test fixtures ---------------------------------------------------------
 @pytest.fixture(autouse=True)
 def temp_storage(tmp_path, monkeypatch):

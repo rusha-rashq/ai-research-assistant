@@ -88,13 +88,23 @@ The automated tests use [pytest](https://docs.pytest.org/). They never call the 
 pip install -r requirements-dev.txt
 ```
 
-**Run the tests.** Use `python -m pytest` rather than bare `pytest`, so the virtual environment's pytest is used instead of a system-wide one:
+**Install the browser for the end-to-end tests** (one-time; downloads Chromium for Playwright):
 
 ```bash
-python -m pytest
+python -m playwright install chromium
 ```
 
-**Reproduce the coverage numbers** (line and branch coverage for the five application modules):
+**Run the tests.** Use `python -m pytest` rather than bare `pytest`, so the virtual environment's pytest is used instead of a system-wide one. The suite has two parts:
+
+```bash
+python -m pytest tests --ignore=tests/e2e   # fast unit/API tests (well under a second)
+python -m pytest tests/e2e                  # browser tests with Playwright (~10 seconds)
+python -m pytest                            # everything
+```
+
+The browser tests in `tests/e2e/` start the real app on a free port in a subprocess, with a temporary data directory and arXiv and Anthropic faked inside that server process. They drive the UI in headless Chromium (search, save, upload, summarize, ask, plus UI details such as the "Re-summarize" label and the abstract "Show more" toggle). The markdown CDN scripts are blocked in these tests, so the UI's plain-text fallback is what gets checked.
+
+**Reproduce the coverage numbers** (line and branch coverage for the five application modules; this command also runs the browser tests, which don't change the Python numbers much because the server runs in a separate process. Add `tests --ignore=tests/e2e` for the fast suite only):
 
 ```bash
 python -m pytest --cov=app --cov=arxiv --cov=db --cov=llm --cov=pdf --cov-branch --cov-report=term-missing
@@ -121,7 +131,7 @@ python mutation/run_mutants.py --tests mutation/round0_tests/tests --label round
 - **Requests are blocking.** There is no streaming, so summaries take 10-30 seconds with a spinner.
 - **Search is basic.** Results are the top 10 from arXiv's `all:` keyword query, with no pagination or filters.
 - **Markdown rendering needs internet access** to load `marked` and `DOMPurify` from a CDN. Without it, responses show as plain text.
-- **Test coverage is backend-only.** The automated tests cover the Python code; the browser UI (`static/index.html`) was checked manually.
+- **Frontend tests cover the main flows only.** The Playwright tests exercise the key user flows and a few UI behaviours in Chromium; they don't cover other browsers, error states for every request, or the Markdown rendering path (the CDN scripts are blocked in tests).
 
 ## How this was built
 

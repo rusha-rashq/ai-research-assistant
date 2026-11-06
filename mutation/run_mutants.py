@@ -106,7 +106,7 @@ def main():
             shutil.copy(ROOT / f, work / f)
         shutil.copytree(ROOT / "static", work / "static")
         (work / "pytest.ini").write_text("[pytest]\n")
-        shutil.copytree(tests_dir, work / "tests", ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(tests_dir, work / "tests", ignore=shutil.ignore_patterns("__pycache__", "e2e"))  # browser tests are too slow per mutant
 
         rc, out = run_pytest(work)
         if rc != 0:
