@@ -1,0 +1,54 @@
+[final] baseline OK: 112 passed in 0.47s
+
+#01 KILLED   app.py:33  search blank query: status 400 -> 422  <- tests/test_api.py::test_search_blank_400[]
+#02 KILLED   app.py:32  search: whitespace-only query no longer rejected  <- tests/test_api.py::test_search_blank_400[   ]
+#03 KILLED   app.py:35  search: query no longer trimmed  <- tests/test_api.py::test_search_ok
+#04 KILLED   app.py:37  search arXiv failure: status 502 -> 500  <- tests/test_api.py::test_search_arxiv_failure_502
+#05 KILLED   app.py:44  save duplicate: status 409 -> 400  <- tests/test_api.py::test_save_duplicate_409_even_with_different_version
+#06 KILLED   app.py:42  save: version suffix no longer stripped from stored id  <- tests/test_api.py::test_save_paper_success
+#07 KILLED   app.py:52  save: author separator ', ' -> ','  <- tests/test_api.py::test_save_paper_success
+#08 KILLED   app.py:67  upload unreadable PDF: status 400 -> 422  <- tests/test_api.py::test_upload_not_a_pdf_400_and_cleans_up
+#09 KILLED   app.py:69  upload scanned PDF: status 422 -> 400  <- tests/test_api.py::test_upload_scanned_pdf_422
+#10 KILLED   app.py:80  upload: orphan file cleanup on failure deleted  <- tests/test_api.py::test_upload_not_a_pdf_400_and_cleans_up
+#11 KILLED   app.py:74  upload: filename fallback for empty title removed  <- tests/test_api.py::test_upload_title_falls_back_to_filename
+#12 KILLED   app.py:116  summarize: force flag ignored  <- tests/test_api.py::test_summarize_force_regenerates
+#13 KILLED   app.py:103  retry download: recovered text no longer persisted  <- tests/test_api.py::test_missing_text_retries_download
+#14 KILLED   app.py:101  retry download: empty-text check `not` -> `is None`  <- tests/test_api.py::test_retry_download_empty_text_422
+#15 KILLED   app.py:122  summarize: summary no longer cached  <- tests/test_api.py::test_summarize_generates_and_caches
+#16 KILLED   app.py:128  ask: question not trimmed (blank check weakened)  <- tests/test_api.py::test_ask_success
+#17 KILLED   app.py:159  delete: PDF file no longer removed  <- tests/test_api.py::test_delete_removes_row_and_pdf
+#18 KILLED   app.py:157  delete: DB row no longer deleted  <- tests/test_api.py::test_delete_removes_row_and_pdf
+#19 KILLED   app.py:110  truncation_note condition inverted  <- tests/test_api.py::test_summarize_generates_and_caches
+#20 KILLED   arxiv.py:17  search: start offset 0 -> 1  <- tests/test_arxiv.py::test_search_starts_from_first_result
+#21 SURVIVED arxiv.py:14  search: default max_results 10 -> 5
+#22 KILLED   arxiv.py:35  search result url: link replaced by bare id  <- tests/test_arxiv.py::test_parses_entries
+#23 KILLED   arxiv.py:11  _clean: inner whitespace no longer collapsed  <- tests/test_arxiv.py::test_parses_entries
+#24 KILLED   arxiv.py:22  search: HTTP errors no longer raised  <- tests/test_arxiv.py::test_http_error_propagates
+#25 KILLED   arxiv.py:17  search: 'all:' field prefix removed  <- tests/test_arxiv.py::test_parses_entries
+#26 KILLED   arxiv.py:33  year parsing: wrong slice [:4] -> [:3]  <- tests/test_arxiv.py::test_parses_entries
+#27 KILLED   db.py:57  list_papers: newest-first -> oldest-first  <- tests/test_api.py::test_list_empty_and_ordering
+#28 KILLED   db.py:32  schema: UNIQUE constraint on arxiv_id dropped  <- tests/test_db.py::test_arxiv_id_unique
+#29 KILLED   db.py:33  schema: NOT NULL on title dropped  <- tests/test_db.py::test_title_required
+#30 KILLED   db.py:70  find_by_arxiv_id: = -> !=  <- tests/test_api.py::test_save_duplicate_409_even_with_different_version
+#31 KILLED   db.py:10  has_text flag inverted  <- tests/test_api.py::test_save_paper_success
+#32 KILLED   db.py:62  get_paper: full_text never returned  <- tests/test_api.py::test_save_paper_success
+#33 KILLED   db.py:22  connect(): connection no longer closed  <- tests/test_db.py::test_db_functions_close_their_connections
+#34 KILLED   db.py:19  connect(): commit/rollback removed  <- tests/test_api.py::test_save_paper_success
+#35 KILLED   llm.py:15  _client: missing-key check inverted  <- tests/test_llm.py::test_missing_api_key_raises
+#36 KILLED   llm.py:67  prepare_text boundary: <= -> <  <- tests/test_llm.py::test_prepare_text_boundary_not_truncated
+#37 KILLED   llm.py:69  prepare_text: truncates one char short  <- tests/test_llm.py::test_prepare_text_truncates
+#38 KILLED   llm.py:77  summary prompt: section heading 'Key Results' renamed  <- tests/test_llm.py::test_summarize
+#39 KILLED   llm.py:88  QA system prompt: 'answer only from paper' instruction removed  <- tests/test_llm.py::test_answer_question
+#40 KILLED   llm.py:44  extract_metadata: regex no longer spans newlines  <- tests/test_llm.py::test_metadata_pretty_printed_json
+#41 KILLED   llm.py:56  extract_metadata: year no longer validated as int  <- tests/test_llm.py::test_metadata_year_must_be_int
+#42 KILLED   llm.py:83  summarize: max_tokens 2000 -> 20  <- tests/test_llm.py::test_summary_gets_enough_tokens
+#43 KILLED   llm.py:29  ask_claude: non-text blocks no longer filtered  <- tests/test_llm.py::test_ask_claude_joins_text_blocks_only
+#44 KILLED   llm.py:22  ask_claude: system prompt never sent  <- tests/test_llm.py::test_ask_claude_passes_system_and_max_tokens
+#45 KILLED   pdf.py:13  base_arxiv_id: multi-digit versions not stripped  <- tests/test_pdf.py::test_base_arxiv_id[2401.00001v12-2401.00001]
+#46 KILLED   pdf.py:18  download_pdf: '/' in old-style ids not sanitised  <- tests/test_pdf.py::test_download_old_style_id_slash_replaced
+#47 KILLED   pdf.py:20  download_pdf: HTTP errors ignored  <- tests/test_pdf.py::test_download_http_error
+#48 KILLED   pdf.py:27  extract_text: pages joined without newline  <- tests/test_pdf.py::test_extract_text_separates_pages_even_without_trailing_newline
+#49 SURVIVED pdf.py:32  extract_first_page: strip() removed
+#50 SURVIVED pdf.py:19  download_pdf: timeout 60 -> 1
+
+[final] mutation score: 47/50 killed = 94.0%
